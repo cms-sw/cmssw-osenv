@@ -5,6 +5,7 @@ CMD_TO_RUN=()
 CMS_IMAGE=$(basename $0)
 THISDIR=$(dirname $0)
 IGNORE_MOUNTS=""
+EXTRA_MOUNTS=""
 SHOW_COMMAND="true"
 INTERACTIVE=""
 CONTAINER_CMD="singularity"
@@ -20,15 +21,18 @@ while [ "$#" != 0 ]; do
     -h|--help)
       HELP_ARG=""
       if [ "${CMS_IMAGE}" = "${BASE_SCRIPT}" ] ; then HELP_ARG="[--cmsos <image>] "; fi
-      echo "Usage: $0 [-h|--help] ${HELP_ARG}[extra-options] [--show-command] [--ignore-mount <dir1[,dir2[,...]]>] [--interactive] [--command-to-run|-- <command(s)>]"
+      echo "Usage: $0 [-h|--help] ${HELP_ARG}[extra-options] [--show-command] [--ignore-mount <dir1[,dir2[,...]]>] [--extra-mount <dir1[,dir2[,...]]>] [--interactive] [--command-to-run|-- <command(s)>]"
       echo "Environment variable UNPACKED_IMAGE can be set to point to either valid docker/singularity image or unpacked image path"
       echo "If <command> includes multiple commands separated by ; or &&, or other high-precedence shell operators like >, it must be quoted"
-      echo "--ignore-mount /dir        To not explicitly mount /dir"
-      echo "--interactive              To start the shell in interactive mode"
-      echo "--command-to-run <command> To run <command> and exit."
+      echo -e "\nOptions:"
+      echo "--ignore-mount dir1[,dir2, ...] To not explicitly mount /dir"
+      echo "--extra-mount dir1[,dir2, ...]  To add additional mount directories"
+      echo "--interactive                   To start the shell in interactive mode"
+      echo "--command-to-run <command>      To run <command> and exit."
       exit 0
       ;;
     --show-command) SHOW_COMMAND="set -x"; shift ;;
+    --extra-mount) EXTRA_MOUNTS=$(echo $2 | tr ',' ' '); shift; shift ;;
     --ignore-mount) IGNORE_MOUNTS=$(echo $2 | tr ',' ' '); shift; shift ;;
     --interactive) INTERACTIVE="-l -i"; shift ;;
     --cmsos)
@@ -76,6 +80,7 @@ done
 #https://github.com/cms-sw/cmssw-osenv/issues/18
 #Extra paths to force mount if exists on host
 FORCE_MOUNT="/asap3 /beegfs /gpfs /nfs /pnfs"
+[ -n "$EXTRA_MOUNTS" ] && FORCE_MOUNT="$EXTRA_MOUNTS $FORCE_MOUNTS"
 for dir in ${FORCE_MOUNT} ; do
   [ ! -e $dir ] || MOUNT_POINTS="${MOUNT_POINTS},${dir}"
 done
