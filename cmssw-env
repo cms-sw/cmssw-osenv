@@ -26,6 +26,7 @@ while [ "$#" != 0 ]; do
       echo "--ignore-mount /dir        To not explicitly mount /dir"
       echo "--interactive              To start the shell in interactive mode"
       echo "--command-to-run <command> To run <command> and exit."
+      echo "[extra-options] Additional singularity/apptainer options e.g. '-B /path' to mount /path from host."
       exit 0
       ;;
     --show-command) SHOW_COMMAND="set -x"; shift ;;
