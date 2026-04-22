@@ -22,16 +22,20 @@ CONTAINER_REPOS=(
 EXTRA_OPTS=
 BASE_SCRIPT="cmssw-env"
 CMD_TO_RUN=()
-CMS_IMAGE=$(basename $0)
-THISDIR=$(command -v $0)
 IGNORE_MOUNTS=""
 SHOW_COMMAND="true"
 INTERACTIVE=""
 FORCE_MOUNT=""
+CMS_IMAGE=$(basename "$0")
+THIS_SCRIPT="$(readlink -f "$(command -v "$0" || echo "$0")")"
+THISDIR=$(dirname "$THIS_SCRIPT")
+case "$THISDIR" in
+  */cms.cern.ch/common* ) CVMFS_MOUNT="${THISDIR%/cms.cern.ch/common*}" ;;
+  * ) CVMFS_MOUNT="/cvmfs" ;;
+esac
 CONTAINER_CMD="singularity"
 BINDPATH_ENV="SINGULARITY_BINDPATH"
 MOUNT_POINTS="${SINGULARITY_BINDPATH}"
-CVMFS_MOUNT=$(echo "$THISDIR" | cut -d/ -f1-2)
 if command -v apptainer >/dev/null 2>&1 ; then
   CONTAINER_CMD="apptainer"
   BINDPATH_ENV="APPTAINER_BINDPATH"
