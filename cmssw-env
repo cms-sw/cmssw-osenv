@@ -1,16 +1,38 @@
 #!/bin/bash -e
+
+find_cvmfs_mount() {
+  for d in "$1" /cvmfs /cernvm ; do
+    [ -n "$d" ] || continue
+    [ -e "$d" ] || continue
+    for repo in "${CONTAINER_REPOS[@]}"; do
+      ls "$d/$repo" >/dev/null 2>&1 || true
+      if [ -d "$d/$repo" ]; then
+        echo "$d"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+CONTAINER_REPOS=(
+  "unpacked.cern.ch/registry.hub.docker.com"
+  "singularity.opensciencegrid.org"
+)
 EXTRA_OPTS=
 BASE_SCRIPT="cmssw-env"
 CMD_TO_RUN=()
 CMS_IMAGE=$(basename $0)
-THISDIR=$(dirname $0)
+THISDIR=$(command -v $0)
 IGNORE_MOUNTS=""
 SHOW_COMMAND="true"
 INTERACTIVE=""
+FORCE_MOUNT=""
 CONTAINER_CMD="singularity"
 BINDPATH_ENV="SINGULARITY_BINDPATH"
 MOUNT_POINTS="${SINGULARITY_BINDPATH}"
-if which apptainer >/dev/null 2>&1 ; then
+CVMFS_MOUNT=$(echo "$THISDIR" | cut -d/ -f1-2)
+if command -v apptainer >/dev/null 2>&1 ; then
   CONTAINER_CMD="apptainer"
   BINDPATH_ENV="APPTAINER_BINDPATH"
   MOUNT_POINTS="${APPTAINER_BINDPATH}"
@@ -20,15 +42,21 @@ while [ "$#" != 0 ]; do
     -h|--help)
       HELP_ARG=""
       if [ "${CMS_IMAGE}" = "${BASE_SCRIPT}" ] ; then HELP_ARG="[--cmsos <image>] "; fi
-      echo "Usage: $0 [-h|--help] ${HELP_ARG}[extra-options] [--show-command] [--ignore-mount <dir1[,dir2[,...]]>] [--interactive] [--command-to-run|-- <command(s)>]"
+      echo "Usage: ${CMS_IMAGE} [-h|--help] ${HELP_ARG}[extra-options] [--show-command] [--cvmfs-mount <dir>]"
+      echo "         [--ignore-mount <dir1[,dir2[,...]]>] [--interactive] [--command-to-run|-- <command(s)>]"
+      echo ""
       echo "Environment variable UNPACKED_IMAGE can be set to point to either valid docker/singularity image or unpacked image path"
       echo "If <command> includes multiple commands separated by ; or &&, or other high-precedence shell operators like >, it must be quoted"
+      echo ""
+      echo "--show-command             Show the singularity/apptainer command and mounted paths."
+      echo "--cvmfs-mount /dir         Path where cvmfs is mounted. Default is ${CVMFS_MOUNT}"
       echo "--ignore-mount /dir        To not explicitly mount /dir"
       echo "--interactive              To start the shell in interactive mode"
       echo "--command-to-run <command> To run <command> and exit."
-      echo "[extra-options] Additional singularity/apptainer options e.g. '-B /path' to mount /path from host."
+      echo "[extra-options]  Additional singularity/apptainer options e.g. '-B /path' to mount /path from host."
       exit 0
       ;;
+    --cvmfs-mount) CVMFS_MOUNT="$2" ; shift; shift;;
     --show-command) SHOW_COMMAND="set -x"; shift ;;
     --ignore-mount) IGNORE_MOUNTS=$(echo $2 | tr ',' ' '); shift; shift ;;
     --interactive) INTERACTIVE="-l -i"; shift ;;
@@ -52,6 +80,10 @@ while [ "$#" != 0 ]; do
       ;;
   esac
 done
+CVMFS_MOUNT=$(find_cvmfs_mount "$CVMFS_MOUNT") || {
+  echo "Error: CVMFS mount not found" >&2
+  exit 1
+}
 
 if [ "${CMS_IMAGE}" = "cmssw-el6" ] ; then
   #Always use SCRAM V2 for el6
@@ -62,23 +94,28 @@ else
   export SCRAM_NO_VERSION_SPAWN=false
 fi
 
-if [ -d /cvmfs ] ; then
+if [ -e "${CVMFS_MOUNT}" ] ; then
+  FORCE_MOUNT="${FORCE_MOUNT} ${CVMFS_MOUNT}"
   cvmfs_repos="cms cms-ib grid unpacked"
   case "$(hostname -d)" in cern.ch|cms) cvmfs_repos="${cvmfs_repos} projects" ;; esac
   for repo in ${cvmfs_repos} ; do
-    ls /cvmfs/${repo}.cern.ch >/dev/null 2>&1 || true
+    ls "${CVMFS_MOUNT}/${repo}.cern.ch" >/dev/null 2>&1 || true
   done
-  MOUNT_POINTS="${MOUNT_POINTS},/cvmfs,/cvmfs/grid.cern.ch/etc/grid-security/vomses:/etc/vomses,/cvmfs/grid.cern.ch/etc/grid-security:/etc/grid-security"
+  MOUNT_POINTS="${MOUNT_POINTS},${CVMFS_MOUNT}/grid.cern.ch/etc/grid-security/vomses:/etc/vomses,${CVMFS_MOUNT}/grid.cern.ch/etc/grid-security:/etc/grid-security"
+  if [ "${CVMFS_MOUNT}" != "/cvmfs" ] ; then
+    MOUNT_POINTS="${MOUNT_POINTS},${CVMFS_MOUNT}:/cvmfs"
+  fi
 fi
 for dir in /etc/tnsnames.ora /etc/pki/ca-trust /eos /build /data /afs /pool $(/bin/pwd -P | cut -d/ -f1-2) ; do
-  [ ! -e $dir ] || MOUNT_POINTS="${MOUNT_POINTS},${dir}"
+  [ "$dir" = "/" ] && continue
+  [ ! -e "$dir" ] || MOUNT_POINTS="${MOUNT_POINTS},${dir}"
 done
 
 #https://github.com/cms-sw/cmssw-osenv/issues/18
 #Extra paths to force mount if exists on host
-FORCE_MOUNT="/asap3 /beegfs /gpfs /nfs /pnfs"
+FORCE_MOUNT="${FORCE_MOUNT} /asap3 /beegfs /gpfs /nfs /pnfs"
 for dir in ${FORCE_MOUNT} ; do
-  [ ! -e $dir ] || MOUNT_POINTS="${MOUNT_POINTS},${dir}"
+  [ ! -e "$dir" ] || MOUNT_POINTS="${MOUNT_POINTS},${dir}"
 done
 
 KRB5FILE=$(klist 2>&1 | grep 'FILE:' | sed 's|.*FILE:|FILE:|')
@@ -93,9 +130,12 @@ case "${KRB5FILE}" in
 esac
 OLD_CMSOS=$(echo ${SCRAM_ARCH} | cut -d_ -f1,2)
 RESET_SCRAM_ARCH=""
-if [ -e ${THISDIR}/../cmsset_default.sh ] ; then
-  RESET_SCRAM_ARCH="[ \"${OLD_CMSOS}\" != \"\$(${THISDIR}/cmsos)\" ] && export SCRAM_ARCH= ; source ${THISDIR}/../cmsset_default.sh;"
-fi
+for dir in "${THISDIR}/.." "${CVMFS_MOUNT}/cms.cern.ch" ; do
+  if [ -e "${dir}/cmsset_default.sh" ] ; then
+    RESET_SCRAM_ARCH="[ \"${OLD_CMSOS}\" != \"\$(${dir}/common/cmsos)\" ] && export SCRAM_ARCH= ; source ${dir}/cmsset_default.sh;"
+    break
+  fi
+done
 
 if [ "${#CMD_TO_RUN[@]}" -gt 0 ] ; then
   # necessary to preserve quotes/grouping in original CMD_TO_RUN when running multiple commands through sh -c
@@ -114,9 +154,11 @@ if [ "X${UNPACKED_IMAGE}" = "X" ] ;then
   CMS_IMAGE=$(echo $CMS_IMAGE | sed -E 's/-(slc|cc)/-el/')
   DOCKER_NAME="$(echo ${CMS_IMAGE} | sed 's|-|/|')"
   UNAME_M=":$(uname -m)"
-  UNPACK_DIRS="/cvmfs/unpacked.cern.ch/registry.hub.docker.com /cvmfs/singularity.opensciencegrid.org"
-  for dir in ${UNPACK_DIRS} ; do
-    ls ${dir} >/dev/null 2>&1 || true
+  UNPACK_DIRS=""
+  for repo in "${CONTAINER_REPOS[@]}" ; do
+    dir="${CVMFS_MOUNT}/${repo}"
+    UNPACK_DIRS="${UNPACK_DIRS} ${dir}"
+    ls "${dir}" >/dev/null 2>&1 || true
     for tag in "" ${UNAME_M} :latest ; do
       if [ -e "${dir}/${DOCKER_NAME}${tag}" ] ; then
         UNPACKED_IMAGE="${dir}/${DOCKER_NAME}${tag}"
@@ -131,21 +173,21 @@ if [ "X${UNPACKED_IMAGE}" = "X" ] ;then
   fi
 fi
 
-if [ -e $UNPACKED_IMAGE ] ; then
+if [ -e "$UNPACKED_IMAGE" ] ; then
   VALID_MOUNT_POINTS=""
   for dir in $(echo $MOUNT_POINTS | tr ',' '\n' | sort | uniq) ; do
-    hdir=$(echo $dir | sed 's|:.*||')
-    bind_dir=$(echo $dir | sed 's|.*:||')
+    hdir=$(echo "$dir" | sed 's|:.*||')
+    bind_dir=$(echo "$dir" | sed 's|.*:||')
     [ "${bind_dir}" = "" ] && bind_dir="${hdir}"
     if [ "${IGNORE_MOUNTS}" != "" ] ; then
       if [ $(echo " ${IGNORE_MOUNTS} " | grep " $hdir " | wc -l) -gt 0 ] ; then continue ; fi
     fi
     mount_path=false
-    if [ -e ${hdir} ] && [ $(echo " ${FORCE_MOUNT} " | grep " ${bind_dir} " | wc -l) -gt 0 ] ; then
+    if [ -e "${hdir}" ] && [ $(echo " ${FORCE_MOUNT} " | grep " ${bind_dir} " | wc -l) -gt 0 ] ; then
       mount_path=true
-    elif   [ -f ${hdir} -a -f ${UNPACKED_IMAGE}/${bind_dir} ] ; then
+    elif   [ -f "${hdir}" -a -f "${UNPACKED_IMAGE}/${bind_dir}" ] ; then
       mount_path=true
-    elif [ -d ${hdir} -a -d ${UNPACKED_IMAGE}/${bind_dir} ] ; then
+    elif [ -d "${hdir}" -a -d "${UNPACKED_IMAGE}/${bind_dir}" ] ; then
       mount_path=true
     fi
     $mount_path && VALID_MOUNT_POINTS="${VALID_MOUNT_POINTS},${dir}"
